@@ -233,23 +233,28 @@ s32 PS4_SYSV_ABI sceAudio3dGetSpeakerArrayMixCoefficients2() {
     return ORBIS_OK;
 }
 
+static std::mutex init_lock;
 s32 PS4_SYSV_ABI sceAudio3dInitialize(const s64 reserved) {
     LOG_INFO(Lib_Audio3d, "called, reserved = {}", reserved);
 
-    if (reserved != 0) {
-        LOG_ERROR(Lib_Audio3d, "reserved != 0");
-        return ORBIS_AUDIO3D_ERROR_INVALID_PARAMETER;
-    }
+    std::scoped_lock lock{init_lock};
 
     if (state) {
         LOG_ERROR(Lib_Audio3d, "already initialized");
         return ORBIS_AUDIO3D_ERROR_NOT_READY;
     }
 
+    if (reserved != 0) {
+        LOG_ERROR(Lib_Audio3d, "reserved != 0");
+        return ORBIS_AUDIO3D_ERROR_INVALID_PARAMETER;
+    }
+
     state = std::make_unique<Audio3dState>();
 
-    if (const auto init_ret = AudioOut::sceAudioOutInit();
-        init_ret < 0 && init_ret != ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT) {
+    const auto init_ret = AudioOut::sceAudioOutInit();
+    if (init_ret < 0 && init_ret != ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT) {
+        LOG_ERROR(Lib_Audio3d, "sceAudioOutInit failed: {:#x}", init_ret);
+        state.reset();
         return init_ret;
     }
 
@@ -1023,23 +1028,77 @@ s32 PS4_SYSV_ABI sceAudio3dPortQueryDebug() {
 }
 
 s32 PS4_SYSV_ABI sceAudio3dPortSetAttribute(const OrbisAudio3dPortId port_id,
-                                            const OrbisAudio3dAttributeId attribute_id,
-                                            void* attribute, const u64 attribute_size) {
+                                            const s32 attribute_id, void* attribute,
+                                            const u64 attribute_size) {
     LOG_INFO(Lib_Audio3d,
              "called, port_id = {}, attribute_id = {}, attribute = {}, attribute_size = {}",
              port_id, static_cast<u32>(attribute_id), attribute, attribute_size);
 
-    if (!state->ports.contains(port_id)) {
-        LOG_ERROR(Lib_Audio3d, "!state->ports.contains(port_id)");
+    if (!state || !state->ports.contains(port_id)) {
+        LOG_ERROR(Lib_Audio3d, "invalid port");
         return ORBIS_AUDIO3D_ERROR_INVALID_PORT;
     }
 
     if (!attribute) {
-        LOG_ERROR(Lib_Audio3d, "!attribute");
+        LOG_ERROR(Lib_Audio3d, "no attribute");
         return ORBIS_AUDIO3D_ERROR_INVALID_PARAMETER;
     }
 
-    // TODO
+    auto& port = state->ports[port_id];
+    std::scoped_lock lock{port.mutex};
+
+    switch (attribute_id) {
+    case 0x10001: { // 65537
+        // float 0.0 - 1.0
+
+        if (attribute_size < sizeof(float)) {
+            return ORBIS_AUDIO3D_ERROR_INVALID_PARAMETER;
+        }
+
+        const float value = *static_cast<float*>(attribute);
+
+        if (!std::isfinite(value) || value < 0.0f || value > 1.0f) {
+            return ORBIS_AUDIO3D_ERROR_INVALID_PARAMETER;
+        }
+
+        port.attributes[0x10001] = value;
+        return ORBIS_OK;
+    }
+
+    case 0x10002: { // 65538
+        // float 0.1 - 2.0
+
+        if (attribute_size < sizeof(float)) {
+            return ORBIS_AUDIO3D_ERROR_INVALID_PARAMETER;
+        }
+
+        const float value = *static_cast<float*>(attribute);
+
+        if (!std::isfinite(value) || value < 0.1f || value > 2.0f) {
+            return ORBIS_AUDIO3D_ERROR_INVALID_PARAMETER;
+        }
+
+        port.attributes[0x10002] = value;
+        return ORBIS_OK;
+    }
+
+    case 0x10003: { // 65539
+        // bool/u8
+
+        if (attribute_size == 0) {
+            return ORBIS_AUDIO3D_ERROR_INVALID_PARAMETER;
+        }
+
+        const u8 value = *static_cast<u8*>(attribute);
+
+        port.attributes[0x10003] = value;
+        return ORBIS_OK;
+    }
+
+    default:
+        LOG_WARNING(Lib_Audio3d, "unsupported attribute_id {:#x}", static_cast<u32>(attribute_id));
+        return ORBIS_AUDIO3D_ERROR_INVALID_PARAMETER;
+    }
 
     return ORBIS_OK;
 }

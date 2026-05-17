@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
+#include <variant>
 #include <vector>
 #include <queue>
 
@@ -119,6 +121,7 @@ struct Port {
     std::deque<AudioData> bed_queue;
     // Mixed stereo frames ready to be consumed by sceAudio3dPortPush.
     std::deque<AudioData> mixed_queue;
+    std::unordered_map<u32, std::variant<float, u8>> attributes;
 };
 
 struct Audio3dState {
@@ -176,9 +179,8 @@ s32 PS4_SYSV_ABI sceAudio3dPortOpen(Libraries::UserService::OrbisUserServiceUser
                                     OrbisAudio3dPortId* port_id);
 s32 PS4_SYSV_ABI sceAudio3dPortPush(OrbisAudio3dPortId port_id, OrbisAudio3dBlocking blocking);
 s32 PS4_SYSV_ABI sceAudio3dPortQueryDebug();
-s32 PS4_SYSV_ABI sceAudio3dPortSetAttribute(OrbisAudio3dPortId port_id,
-                                            OrbisAudio3dAttributeId attribute_id, void* attribute,
-                                            u64 attribute_size);
+s32 PS4_SYSV_ABI sceAudio3dPortSetAttribute(OrbisAudio3dPortId port_id, s32 attribute_id,
+                                            void* attribute, u64 attribute_size);
 s32 PS4_SYSV_ABI sceAudio3dReportRegisterHandler();
 s32 PS4_SYSV_ABI sceAudio3dReportUnregisterHandler();
 s32 PS4_SYSV_ABI sceAudio3dSetGpuRenderer();
