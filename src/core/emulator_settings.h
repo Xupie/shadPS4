@@ -170,6 +170,7 @@ struct GeneralSettings {
     Setting<std::filesystem::path> font_dir;
 
     Setting<int> volume_slider{100};
+    Setting<bool> enable_mods{false};
     Setting<bool> neo_mode{false};
     Setting<bool> dev_kit_mode{false};
     Setting<int> extra_dmem_in_mbytes{0};
@@ -189,6 +190,7 @@ struct GeneralSettings {
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
             make_override<GeneralSettings>("volume_slider", &GeneralSettings::volume_slider),
+            make_override<GeneralSettings>("enable_mods", &GeneralSettings::enable_mods),
             make_override<GeneralSettings>("neo_mode", &GeneralSettings::neo_mode),
             make_override<GeneralSettings>("dev_kit_mode", &GeneralSettings::dev_kit_mode),
             make_override<GeneralSettings>("extra_dmem_in_mbytes",
@@ -207,9 +209,9 @@ struct GeneralSettings {
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GeneralSettings, install_dirs, addon_install_dir, home_dir,
-                                   sys_modules_dir, font_dir, volume_slider, neo_mode, dev_kit_mode,
-                                   extra_dmem_in_mbytes, shad_net_enabled, trophy_popup_disabled,
-                                   trophy_notification_duration, show_splash,
+                                   sys_modules_dir, font_dir, volume_slider, enable_mods, neo_mode,
+                                   dev_kit_mode, extra_dmem_in_mbytes, shad_net_enabled,
+                                   trophy_popup_disabled, trophy_notification_duration, show_splash,
                                    trophy_notification_side, connected_to_network,
                                    discord_rpc_enabled, show_fps_counter, console_language,
                                    big_picture_scale, shadnet_server)
@@ -582,6 +584,7 @@ public:
 
     // General settings
     SETTING_FORWARD(m_general, VolumeSlider, volume_slider)
+    SETTING_FORWARD_BOOL(m_general, ModsEnabled, enable_mods)
     SETTING_FORWARD_BOOL(m_general, Neo, neo_mode)
     SETTING_FORWARD_BOOL(m_general, DevKit, dev_kit_mode)
     SETTING_FORWARD(m_general, ExtraDmemInMBytes, extra_dmem_in_mbytes)

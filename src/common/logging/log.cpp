@@ -37,6 +37,7 @@ std::unordered_map<std::string_view, std::shared_ptr<spdlog::logger>> ALL_LOGGER
     {Class::Core, nullptr},
     {Class::Core_Devices, nullptr},
     {Class::Core_Linker, nullptr},
+    {Class::Core_Filesystem, nullptr},
     {Class::Debug, nullptr},
     {Class::Frontend, nullptr},
     {Class::IPC, nullptr},

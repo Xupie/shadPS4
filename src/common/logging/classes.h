@@ -15,6 +15,7 @@ constexpr auto Config = "Config";                                   ///< Emulato
 constexpr auto Core = "Core";                                       ///< LLE emulation core
 constexpr auto Core_Devices = "Core.Devices";                       ///< Devices emulation
 constexpr auto Core_Linker = "Core.Linker";                         ///< The module linker
+constexpr auto Core_Filesystem = "Core.Filesystem";                 ///< The filesystem interface library
 constexpr auto Debug = "Debug";                                     ///< Debugging tools
 constexpr auto Frontend = "Frontend";                               ///< Emulator UI
 constexpr auto IPC = "IPC";                                         ///< IPC

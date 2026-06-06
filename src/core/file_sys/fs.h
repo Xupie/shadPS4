@@ -85,6 +85,18 @@ private:
     std::vector<std::filesystem::path> path_parts;
     tsl::robin_map<std::filesystem::path, std::filesystem::path> path_cache;
     std::mutex m_mutex;
+
+    bool m_mods_initialized = false;
+    std::vector<std::filesystem::path> m_active_mod_paths;
+    const std::vector<std::filesystem::path>& GetOrderedModRoots(
+        const std::filesystem::path& mods_path);
+
+    struct GuestPathInfo {
+        std::string normalized_path;
+        std::filesystem::path relative_path;
+    };
+
+    GuestPathInfo ResolveGuestPath(std::string_view guest_path);
 };
 
 enum class FileType {

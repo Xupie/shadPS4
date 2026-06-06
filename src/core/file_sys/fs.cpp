@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <tsl/robin_set.h>
+#include "common/logging/log.h"
 #include "common/string_util.h"
+#include "core/emulator_settings.h"
 #include "core/file_sys/devices/logger.h"
 #include "core/file_sys/devices/nop_device.h"
 #include "core/file_sys/fs.h"
@@ -18,6 +23,30 @@ std::string RemoveTrailingSlashes(const std::string& path) {
         path_sanitized.pop_back();
     }
     return path_sanitized;
+}
+
+MntPoints::GuestPathInfo MntPoints::ResolveGuestPath(std::string_view guest_path) {
+    // Evil games like Turok2 pass double slashes e.g /app0//game.kpf
+    std::string normalized_path(guest_path);
+    size_t pos = normalized_path.find("//");
+    while (pos != std::string::npos) {
+        normalized_path.replace(pos, 2, "/");
+        pos = normalized_path.find("//", pos + 1);
+    }
+
+    std::filesystem::path relative_path;
+
+    if (const auto mount = GetMount(normalized_path)) {
+        if (normalized_path.size() > mount->mount.size()) {
+            // Remove device (e.g /app0) from path to retrieve relative path.
+            relative_path = std::string_view{normalized_path}.substr(mount->mount.size() + 1);
+        }
+    }
+
+    return {
+        .normalized_path = std::move(normalized_path),
+        .relative_path = std::move(relative_path),
+    };
 }
 
 void MntPoints::Mount(const std::filesystem::path& host_folder, const std::string& guest_folder,
@@ -43,13 +72,10 @@ void MntPoints::UnmountAll() {
 
 std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_read_only,
                                              HostPathType path_type) {
-    // Evil games like Turok2 pass double slashes e.g /app0//game.kpf
-    std::string corrected_path(path);
-    size_t pos = corrected_path.find("//");
-    while (pos != std::string::npos) {
-        corrected_path.replace(pos, 2, "/");
-        pos = corrected_path.find("//", pos + 1);
-    }
+
+    const auto guest_info = ResolveGuestPath(path);
+    const auto& corrected_path = guest_info.normalized_path;
+    const auto& rel_path = guest_info.relative_path;
 
     if (path.length() > 255)
         return "";
@@ -81,7 +107,10 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
     // If we're just retrieving the mount, return the correct mount path.
     if (corrected_path_sanitized == mount->mount) {
         if (path_type == HostPathType::Mod) {
-            return mods_path;
+            if (EmulatorSettings.IsModsEnabled()) {
+                return mods_path;
+            }
+            return std::filesystem::path();
         } else if (path_type == HostPathType::Patch) {
             return patch_path;
         } else {
@@ -89,11 +118,8 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
         }
     }
 
-    // Remove device (e.g /app0) from path to retrieve relative path.
-    const auto rel_path = std::string_view{corrected_path}.substr(mount->mount.size() + 1);
     host_path /= rel_path;
     patch_path /= rel_path;
-    mods_path /= rel_path;
 
     if (path_type == HostPathType::Mod) {
         return mods_path;
@@ -101,9 +127,23 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
         return patch_path;
     }
 
+    const auto& ordered_mods = GetOrderedModRoots(mods_path);
+
+    std::vector<std::filesystem::path> active_mod_paths;
+    active_mod_paths.reserve(ordered_mods.size());
+
+    for (const auto& mod : ordered_mods) {
+        active_mod_paths.emplace_back(mod / rel_path);
+    }
+
     if ((corrected_path.starts_with("/app0") || corrected_path.starts_with("/hostapp")) &&
-        path_type != HostPathType::Base && std::filesystem::exists(mods_path)) {
-        return mods_path;
+        path_type != HostPathType::Base && EmulatorSettings.IsModsEnabled() &&
+        std::filesystem::exists(mods_path)) {
+        for (const auto& mod_path : active_mod_paths) {
+            if (std::filesystem::exists(mod_path)) {
+                return mod_path;
+            }
+        }
     }
 
     if ((corrected_path.starts_with("/app0") || corrected_path.starts_with("/hostapp")) &&
@@ -172,8 +212,10 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
 
     if ((corrected_path.starts_with("/app0") || corrected_path.starts_with("/hostapp")) &&
         path_type != HostPathType::Base) {
-        if (const auto path = search(mods_path)) {
-            return *path;
+        for (const auto& mod_path : active_mod_paths) {
+            if (const auto path = search(mod_path)) {
+                return *path;
+            }
         }
     }
 
@@ -198,7 +240,23 @@ void MntPoints::IterateDirectory(std::string_view guest_directory,
 
     // Forces path types so as not to resolve to base path
     const auto patch_path = GetHostPath(guest_directory, nullptr, HostPathType::Patch);
-    const auto mod_path = GetHostPath(guest_directory, nullptr, HostPathType::Mod);
+    const auto mods_path = GetHostPath(guest_directory, nullptr, HostPathType::Mod);
+
+    const auto guest_info = ResolveGuestPath(guest_directory);
+    const auto& rel_path = guest_info.relative_path;
+
+    const auto& ordered_mods = GetOrderedModRoots(mods_path);
+
+    auto get_mod_entry_path =
+        [&](const std::filesystem::path& filename) -> std::optional<std::filesystem::path> {
+        for (const auto& mod_root : ordered_mods) {
+            const auto mod_file = mod_root / rel_path / filename;
+            if (std::filesystem::exists(mod_file)) {
+                return mod_file;
+            }
+        }
+        return std::nullopt;
+    };
 
     // Prepend entries for . and .., as both are treated as files on PS4.
     callback(base_path / ".", false);
@@ -207,10 +265,11 @@ void MntPoints::IterateDirectory(std::string_view guest_directory,
     // Pass 1: Any files that existed in the base directory, using mod/patch directory if needed.
     if (std::filesystem::exists(base_path)) {
         for (const auto& entry : std::filesystem::directory_iterator(base_path)) {
-            const auto mod_entry_path = mod_path / entry.path().filename();
+            const auto mod_entry_path = get_mod_entry_path(entry.path().filename());
             const auto patch_entry_path = patch_path / entry.path().filename();
-            if (std::filesystem::exists(mod_entry_path)) {
-                callback(mod_entry_path, !std::filesystem::is_directory(mod_entry_path));
+
+            if (mod_entry_path) {
+                callback(*mod_entry_path, !std::filesystem::is_directory(*mod_entry_path));
                 continue;
             } else if (std::filesystem::exists(patch_entry_path)) {
                 callback(patch_entry_path, !std::filesystem::is_directory(patch_entry_path));
@@ -225,9 +284,9 @@ void MntPoints::IterateDirectory(std::string_view guest_directory,
         for (const auto& entry : std::filesystem::directory_iterator(patch_path)) {
             const auto base_entry_path = base_path / entry.path().filename();
             if (!std::filesystem::exists(base_entry_path)) {
-                const auto mod_entry_path = mod_path / entry.path().filename();
-                if (std::filesystem::exists(mod_entry_path)) {
-                    callback(mod_entry_path, !std::filesystem::is_directory(mod_entry_path));
+                const auto mod_entry_path = get_mod_entry_path(entry.path().filename());
+                if (mod_entry_path) {
+                    callback(*mod_entry_path, !std::filesystem::is_directory(*mod_entry_path));
                     continue;
                 }
                 callback(entry.path(), !entry.is_directory());
@@ -236,16 +295,117 @@ void MntPoints::IterateDirectory(std::string_view guest_directory,
     }
 
     // Pass 3: Any files that exist only in the mod directory (confirmed this can be valid)
-    if (std::filesystem::exists(mod_path)) {
-        for (const auto& entry : std::filesystem::directory_iterator(mod_path)) {
-            const auto base_entry_path = base_path / entry.path().filename();
-            const auto patch_entry_path = patch_path / entry.path().filename();
-            if (!std::filesystem::exists(base_entry_path) &&
-                !std::filesystem::exists(patch_entry_path)) {
-                callback(entry.path(), !entry.is_directory());
+    for (const auto& mod_root : ordered_mods) {
+        const auto current_mod_dir = mod_root / rel_path;
+        if (std::filesystem::exists(current_mod_dir)) {
+            for (const auto& entry : std::filesystem::directory_iterator(current_mod_dir)) {
+                const auto filename = entry.path().filename();
+                const auto base_entry_path = base_path / filename;
+                const auto patch_entry_path = patch_path / filename;
+
+                if (!std::filesystem::exists(base_entry_path) &&
+                    !std::filesystem::exists(patch_entry_path)) {
+                    const auto mod_entry_path = get_mod_entry_path(filename);
+                    if (mod_entry_path == entry.path()) {
+                        callback(entry.path(), !entry.is_directory());
+                    }
+                }
             }
         }
     }
+}
+
+void CheckModConfig(const std::filesystem::path& mods_path) {
+    if (!std::filesystem::exists(mods_path)) {
+        return;
+    }
+
+    const auto json_path = mods_path / "mods.json";
+    nlohmann::json config = nlohmann::json::array();
+
+    if (std::filesystem::exists(json_path)) {
+        std::ifstream file(json_path);
+        try {
+            file >> config;
+        } catch (const nlohmann::json::exception& e) {
+            LOG_WARNING(Core_Filesystem, "Failed to parse mods JSON: {}", e.what());
+            return;
+        }
+    }
+
+    // map known mods to avoid duplicates
+    tsl::robin_set<std::string> known_mods;
+    for (const auto& mod : config) {
+        if (mod.contains("name") && mod["name"].is_string()) {
+            known_mods.insert(mod["name"].get<std::string>());
+        }
+    }
+
+    bool changed = false;
+
+    // check directory for new mods that aren't in json yet
+    for (const auto& entry : std::filesystem::directory_iterator(mods_path)) {
+        if (!entry.is_directory()) {
+            continue;
+        }
+
+        const auto name = entry.path().filename().string();
+        if (!known_mods.contains(name)) {
+            config.push_back({
+                {"name", name}, {"enabled", true} // enabled by default
+            });
+            known_mods.insert(name);
+            changed = true;
+        }
+    }
+
+    if (changed || !std::filesystem::exists(json_path)) {
+        std::ofstream file(json_path, std::ios::trunc);
+        file << config.dump(4);
+    }
+}
+
+const std::vector<std::filesystem::path>& MntPoints::GetOrderedModRoots(
+    const std::filesystem::path& mods_path) {
+
+    std::scoped_lock lock{m_mutex};
+
+    // get the order only once
+    if (m_mods_initialized) {
+        return m_active_mod_paths;
+    }
+    m_mods_initialized = true;
+
+    if (!EmulatorSettings.IsModsEnabled() || !std::filesystem::exists(mods_path)) {
+        return m_active_mod_paths;
+    }
+
+    CheckModConfig(mods_path);
+    const auto json_path = mods_path / "mods.json";
+
+    std::ifstream file(json_path);
+    nlohmann::json config;
+    try {
+        file >> config;
+    } catch (const nlohmann::json::exception& e) {
+        LOG_WARNING(Core_Filesystem, "Failed to parse mods JSON: {}", e.what());
+        return m_active_mod_paths;
+    }
+
+    if (config.is_array()) {
+        for (const auto& mod : config) {
+            // only load the mod if it's enabled
+            if (mod.value("enabled", false) && mod.contains("name") && mod["name"].is_string()) {
+                auto mod_path = mods_path / mod["name"].get<std::string>();
+
+                if (std::filesystem::is_directory(mod_path)) {
+                    m_active_mod_paths.push_back(std::move(mod_path));
+                }
+            }
+        }
+    }
+
+    return m_active_mod_paths;
 }
 
 int HandleTable::CreateHandle() {
